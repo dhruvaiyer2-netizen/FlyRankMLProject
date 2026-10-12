@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Which well-ranked pages under-capture clicks? A baseline-first scoring study</title>
+<meta name="description" content="A leakage-checked study of CTR opportunity scoring on FlyRank search data, March-April 2026.">
+<style>
+:root{--bg:#f6f8fa;--ink:#16212b;--mute:#5b6875;--line:#d5dce3;--teal:#0e6b78;--amber:#b86a12;--card:#ffffff}
+@media (prefers-color-scheme:dark){:root{--bg:#0f161c;--ink:#e6ecf1;--mute:#93a1ad;--line:#27333d;--teal:#4cc3d3;--amber:#e5a24e;--card:#16212a}}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:18px/1.7 Charter,"Iowan Old Style",Georgia,serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header,main,footer{max-width:700px;margin:0 auto;padding:0 20px}
+header{padding-top:56px}
+h1{font:700 2.2rem/1.2 "Avenir Next",Avenir,"Segoe UI",system-ui,sans-serif;letter-spacing:-.02em;margin:0 0 12px}
+h2{font:650 1.4rem/1.3 "Avenir Next",Avenir,"Segoe UI",system-ui,sans-serif;margin:2.6rem 0 .6rem;padding-top:1.2rem;border-top:1px solid var(--line)}
+h3{font:600 1.05rem/1.4 "Avenir Next",Avenir,"Segoe UI",system-ui,sans-serif;margin:1.6rem 0 .3rem}
+p{margin:.7rem 0}
+.by{color:var(--mute);font:.9rem/1.5 system-ui,sans-serif}
+.abs{background:var(--card);border-left:4px solid var(--teal);padding:4px 20px;margin:24px 0}
+.abs b{font-family:system-ui,sans-serif}
+nav{font:.85rem/2 system-ui,sans-serif;display:flex;flex-wrap:wrap;gap:4px 16px;margin:18px 0}
+a{color:var(--teal)}
+code{font:.85em ui-monospace,Menlo,Consolas,monospace;background:var(--card);padding:1px 5px;border-radius:3px}
+table{border-collapse:collapse;width:100%;font:.88rem/1.4 system-ui,sans-serif}
+th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:right}
+th:first-child,td:first-child{text-align:left}
+.wrap{overflow-x:auto;margin:14px 0}
+figure{margin:22px 0}
+figcaption{font:.85rem/1.5 system-ui,sans-serif;color:var(--mute);margin-top:6px}
+svg{width:100%;height:auto;display:block;font-family:system-ui,sans-serif}
+ol.rec{padding-left:1.2rem}
+ol.rec li{margin:.9rem 0}
+.note{font:.88rem/1.5 system-ui,sans-serif;color:var(--mute)}
+footer{padding-bottom:60px;color:var(--mute);font:.88rem/1.6 system-ui,sans-serif;border-top:1px solid var(--line);margin-top:3rem;padding-top:1.2rem;max-width:700px}
+:focus-visible{outline:3px solid var(--amber);outline-offset:2px}
+@media (max-width:520px){body{font-size:17px}h1{font-size:1.75rem}}
+</style>
+</head>
+<body>
+<header>
+<h1>Which well-ranked pages under-capture clicks?</h1>
+<p class="by">A baseline-first, leakage-checked scoring study on FlyRank search data (March–April 2026)<br>[Your Name] · FlyRank ML Internship capstone · Lane: CTR / Engagement Opportunity Scoring</p>
+<nav aria-label="Sections"><a href="#intro">Introduction</a><a href="#data">Data</a><a href="#method">Methodology</a><a href="#results">Results</a><a href="#limits">Limitations</a><a href="#recs">Recommendations</a><a href="#repro">Reproducibility</a></nav>
+<div class="abs"><p><b>Abstract.</b> Pages that rank well but earn fewer clicks than their position suggests are cheap places to look for improvement, so we asked which visible pages under-capture clicks. We scored 61,924 page-level records with at least 500 impressions in March 2026 by how far each page's click-through rate (CTR) sat below the median for its position tier, and treated that transparent rule as the baseline. We then tested whether a Random Forest could predict, from March data only, which pages would still sit below their tier median in April, using client-grouped and time-aware validation plus leakage checks. The measured result is that March CTR relative to its tier carries nearly all the signal (ROC-AUC about 0.82), and the forest's measured gain over the rule is small (about +0.006 to +0.009 under the stricter designs) but larger at the top of the ranking (precision among the top 500 pages about 0.93–0.94 vs 0.87–0.88). We therefore present the output as a ranked review queue for human decision-support, not as evidence that any edit will raise clicks.</p></div>
+</header>
+<main>
+
+<h2 id="intro">1. Introduction</h2>
+<p>Review time for content teams is limited. The decision this work supports is simple: of thousands of pages already visible in search, which ones should a person open first to check the title, description, or match to search intent? A page at position 2 with almost no clicks is a different case from a page at position 18 with almost no clicks, so any score must compare a page with its own position tier, not with one global CTR.</p>
+<p>We use safe claim language throughout. Results are observed or measured on this dataset, directional, and meant for decision-support. Nothing here proves why a page underperforms, how Google ranks pages, or that a refresh causes a recovery.</p>
+
+<h2 id="data">2. Data</h2>
+<p><b>Release and tables.</b> The FlyRank ML Internship warehouse: <code>fact_content_daily_performance</code> (one row per page per client per day) joined to <code>dim_content</code> (content metadata). Identifiers are anonymized hashes; no client names, domains, URLs, or queries appear in this paper.</p>
+<p><b>Windows.</b> February, March and April 2026. March alone has 9,841,378 daily rows, with 9,841,378 unique page-client-day keys (no duplicates), 55 clients and 331,437 pages over 2026-03-01 to 2026-03-31.</p>
+<p><b>Page-level aggregation.</b> Daily rows are rolled up to one row per page per month. CTR is total clicks over total impressions, and average position is impression-weighted (summed position over summed impressions), not an average of daily averages.</p>
+<p><b>What we excluded, and why.</b></p>
+<ul>
+<li><b>Pages under 500 impressions in the month.</b> With 1–9 impressions, CTR can only be near 0% or 100%. Measured CTR spread (standard deviation) falls from 8.43 at 1–9 impressions to 0.35 at 500+.</li>
+<li><b>Pages deleted as of the snapshot</b> (2 pages in the final sample).</li>
+<li><b>FlyRank product outputs</b> such as health, priority, and action flags, so the model cannot learn to copy the product.</li>
+<li><b>GA4 engagement fields.</b> Only 413,966 of 9,841,378 March rows (4.2%) have GA4 data, so engagement was not used as a feature.</li>
+<li><b>AI-session fields</b>, which are too sparse for this lane.</li>
+</ul>
+<p><b>Known gap.</b> <code>word_count</code> is missing for roughly a quarter of live pages (82% for 2024-created, 40% for 2025, 2.3% for 2026), so a missing-value flag is included.</p>
+
+<h2 id="method">3. Methodology</h2>
+<h3>Baseline rule</h3>
+<p>Among pages with at least 500 impressions, group by position tier (1–3, 4–10, 11–20, 21+). Compute each tier's median CTR. A page's score is its tier median minus its own CTR. A positive score gets one reason code, <code>ctr_below_tier_median</code>, and the action <code>review_title_meta</code>; everything else is <code>monitor</code>. Ties are broken by impressions, largest first. Zero-click pages all share the maximum score within a tier, so without a tie-break their order would be arbitrary.</p>
+<h3>Label</h3>
+<p>Features come from one month; the label comes from the next. For a March page, the label is 1 if the page, with at least 500 impressions in April, sat below its April tier median CTR. This is a defined proxy, not an observed outcome of any edit. Of 61,924 qualifying March pages, 51,496 (83.2%) also had 500+ April impressions and so received a label.</p>
+<h3>Features (all knowable at the end of the feature month)</h3>
+<p>March CTR, average position, impressions, the March CTR-gap score, word count (with a missing flag), content age at month end, and four search-intent flags.</p>
+<h3>Models and validation</h3>
+<p>We compared the rule, logistic regression, and a Random Forest. Three designs, each repeated over five random seeds: (1) a random split of pages, as a naive reference; (2) a split grouped by client, so test clients are unseen; (3) train on February→March and test on March→April for held-out clients. Metrics are ROC-AUC and precision among the top 500 ranked pages.</p>
+<h3>Leakage checks</h3>
+<p>No label or product-flag columns among features; feature and label windows do not overlap; no single feature separates the label near-perfectly; training on shuffled labels gave AUC 0.475; computing tier medians from training pages only changed the rule's AUC from 0.8283 to 0.8276.</p>
+
+<h2 id="results">4. Results</h2>
+<figure><div id="f1"></div><figcaption><b>Figure 1.</b> Median CTR by position tier (March, pages with 500+ impressions). Measured medians fall with position: 0.236%, 0.215%, 0.167%, 0.075%. Tier sizes: 7,940, 32,300, 10,534, 11,150 pages. This is why each page is compared with its own tier.</figcaption></figure>
+
+<p>The rule is already a strong baseline. The forest's measured advantage shrinks as validation becomes stricter, and under the forward-in-time design it was not positive in every seed.</p>
+<figure><div id="f2"></div><figcaption><b>Figure 2.</b> ROC-AUC of the Week-4 rule vs Random Forest, averaged over 5 seeds. The vertical axis starts at 0.80 to make small differences visible; the differences are small.</figcaption></figure>
+
+<div class="wrap"><table>
+<tr><th>Design</th><th>Test clients</th><th>Rule AUC</th><th>Forest AUC</th><th>Gain range</th><th>Rule P@500</th><th>Forest P@500</th></tr>
+<tr><td>Random page split</td><td>30</td><td>0.824</td><td>0.845</td><td>+0.021 to +0.022</td><td>0.882</td><td>0.976</td></tr>
+<tr><td>Client-grouped</td><td>11</td><td>0.820</td><td>0.829</td><td>+0.003 to +0.016</td><td>0.874</td><td>0.939</td></tr>
+<tr><td>Feb→Mar train, Mar→Apr test, unseen clients</td><td>10</td><td>0.825</td><td>0.831</td><td>−0.001 to +0.011</td><td>0.878</td><td>0.934</td></tr>
+</table></div>
+<p class="note">Logistic regression scored 0.815–0.825 AUC, roughly level with or below the rule. Test base rate about 0.52.</p>
+
+<h3>What the model leans on</h3>
+<p>In permutation importance, the March CTR gap dominated (AUC drop 0.157), then CTR (0.047), impressions (0.017) and position (0.010). Word count, content age and intent contributed almost nothing. The forest largely re-learns the rule.</p>
+
+<h3>Where it is wrong</h3>
+<figure><div id="f3"></div><figcaption><b>Figure 3.</b> Forest error rate by size of the March gap (client-grouped split). Pages near their tier median are hardest to call.</figcaption></figure>
+<p>Overall error was about 24% on the main split. Confident false positives were visible pages with March CTR under 0.1% that recovered in April. Confident false negatives had March CTR of roughly 0.9–2.6% and fell below the median in April, most by a small margin, some on only 700–1,000 impressions. Both look like month-to-month movement toward the middle, which one month of data cannot anticipate.</p>
+
+<h2 id="limits">5. Limitations and honest framing</h2>
+<ul>
+<li>Observational, directional results on one dataset; no causal claim about edits, refreshes, or Google's algorithm.</li>
+<li>The label is a defined proxy. Only pages with 500+ impressions in both months are covered (83% of visible March pages).</li>
+<li>One or two month transitions, and test sets dominated by a few large clients. Another period may differ.</li>
+<li><code>dim_content</code> is a current snapshot, not as-of-March, and word count is incomplete for older pages.</li>
+<li>The forest's gain over the rule is small; a team could reasonably prefer the rule plus a tie-break for simplicity.</li>
+</ul>
+
+<h2 id="recs">6. Ranked recommendations</h2>
+<p class="note">Decision-support for human review. Each item says how to check whether it helped.</p>
+<ol class="rec">
+<li><b>Review high-visibility zero-click pages first.</b> In tiers 1–3 and 4–10, open pages with the largest CTR gap and most impressions, and check the title, description, and match to search intent. <i>Check:</i> compare clicks 30 and 60 days later against similar pages left untouched.</li>
+<li><b>Prioritise large gaps, monitor small ones.</b> Error was about 10% for the largest March gaps and about 35% for the smallest, so pages near their tier median are poor use of review time.</li>
+<li><b>Do not act on CTR from pages under 500 impressions.</b> Their CTR is dominated by sampling noise.</li>
+<li><b>Re-score monthly and expect movement.</b> Several flagged pages recovered the next month without any known change; confirm a gap persists before editing.</li>
+<li><b>Start with the transparent rule; add the model only for top-of-queue ranking.</b> The forest's clearest advantage was precision among the top 500 (about 0.93–0.94 vs 0.87–0.88).</li>
+</ol>
+
+<h2 id="repro">7. Reproducibility</h2>
+<p>Notebooks and code: <a href="https://github.com/[your-username]/[your-repo]">github.com/[your-username]/[your-repo]</a>, under <code>work/notebooks/</code> (data contract, baseline score, model, and audit). The ranked queue is written to <code>work/outputs/baseline_action_score.csv</code>. Data is read from the FlyRank ML Internship warehouse (access required).</p>
+</main>
+<footer>
+<p><b>Acknowledgments and data credit.</b> Built on the FlyRank ML Internship dataset, <a href="https://flyrank.ai">https://flyrank.ai</a>. This is an independent internship project; figures are measured on that dataset and are not FlyRank product claims.</p>
+</footer>
+<script>
+function bars(id,o){
+  const W=640,H=o.h||250,L=46,R=12,T=14,B=46,pw=W-L-R,ph=H-T-B,lo=o.min||0,hi=o.max;
+  const y=v=>T+ph-(v-lo)/(hi-lo)*ph;
+  const g=o.groups.length,s=o.series.length,gw=pw/g,bw=Math.min(54,gw*.7/s);
+  let h=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${o.label}">`;
+  for(let i=0;i<=4;i++){const v=lo+(hi-lo)*i/4;h+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L-6}" y="${y(v)+4}" text-anchor="end" font-size="11" fill="var(--mute)">${v.toFixed(o.dec)}${o.unit||''}</text>`}
+  o.groups.forEach((n,i)=>{const cx=L+gw*i+gw/2;
+    o.series.forEach((se,k)=>{const x=cx-(s*bw)/2+k*bw,v=se.v[i];
+      h+=`<rect x="${x+1}" y="${y(v)}" width="${bw-2}" height="${y(lo)-y(v)}" rx="2" fill="${se.c}"/><text x="${x+bw/2}" y="${y(v)-4}" text-anchor="middle" font-size="11" fill="var(--ink)">${v.toFixed(o.dec)}</text>`});
+    h+=`<text x="${cx}" y="${H-24}" text-anchor="middle" font-size="12" fill="var(--ink)">${n}</text>`});
+  if(o.series.length>1)o.series.forEach((se,k)=>{h+=`<rect x="${L+k*120}" y="${H-12}" width="10" height="10" fill="${se.c}"/><text x="${L+k*120+14}" y="${H-3}" font-size="11" fill="var(--mute)">${se.n}</text>`});
+  document.getElementById(id).innerHTML=h+'</svg>'}
+bars('f1',{label:'Median CTR by position tier',groups:['Pos 1-3','Pos 4-10','Pos 11-20','Pos 21+'],series:[{n:'Median CTR (%)',c:'var(--teal)',v:[.236,.215,.167,.075]}],min:0,max:.3,dec:3,unit:'%'});
+bars('f2',{label:'ROC-AUC rule vs forest across three validation designs',groups:['Random split','Client-grouped','Forward in time'],series:[{n:'Week-4 rule',c:'var(--amber)',v:[.824,.820,.825]},{n:'Random Forest',c:'var(--teal)',v:[.845,.829,.831]}],min:.8,max:.86,dec:3,h:270});
+bars('f3',{label:'Error rate by size of March gap',groups:['Smallest gap','Small','Large','Largest gap'],series:[{n:'Error rate (%)',c:'var(--teal)',v:[35.3,32.3,20.4,10.5]}],min:0,max:40,dec:1,unit:'%'});
+</script>
+</body>
+</html>
